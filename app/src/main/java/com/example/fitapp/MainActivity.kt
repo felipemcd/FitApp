@@ -23,9 +23,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -35,7 +32,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -60,17 +56,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.launch
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.GET
 
-// --- MODELOS DE DADOS ATUALIZADOS ---
 data class Treino(val id: String, val nome: String, val subttitulo: String)
 data class Exercicio(val nome: String, val musculo: String)
 
-// Firebase agora armazena o mapeamento completo pedido!
 data class HistoricoCarga(
     val data: String, 
     val peso: String, 
@@ -80,7 +79,21 @@ data class HistoricoCarga(
     val treino: String
 )
 
-// --- VIEWMODEL ---
+interface ApiService {
+    @GET("api/v1/catalogo-exercicios")
+    suspend fun getExercicios(): List<Exercicio>
+}
+
+object RetrofitClient {
+    val instance: ApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://servidor-fitapp-backend.com/")
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(ApiService::class.java)
+    }
+}
+
 class FitViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
 
@@ -90,7 +103,6 @@ class FitViewModel : ViewModel() {
         Treino("3", "Treino C", "Cardio e Abdominais")
     )
 
-    // Banco de dados estático de exercícios vinculados por treino
     private val mapaExercicios = mapOf(
         "Treino A" to listOf(
             Exercicio("Supino Reto", "Peito"),
@@ -117,7 +129,20 @@ class FitViewModel : ViewModel() {
         HistoricoCarga("18/04/2026", "50 kg", "12", "Supino Reto", "Peito", "Treino A")
     )
 
-    // Pega a lista correta baseado no nome do treino selecionado
+    init {
+        sincronizarCatalogoComServidor()
+    }
+
+    private fun sincronizarCatalogoComServidor() {
+        viewModelScope.launch {
+            try {
+                val catalogoOnline = RetrofitClient.instance.getExercicios()
+            } catch (e: Exception) {
+                println("Retrofit: Falha ao conectar na API. Usando catálogo offline. Erro: ${e.message}")
+            }
+        }
+    }
+
     fun obterExerciciosDoTreino(nomeTreino: String): List<Exercicio> {
         return mapaExercicios[nomeTreino] ?: listOf(Exercicio("Exercício Livre", "Geral"))
     }
@@ -129,7 +154,6 @@ class FitViewModel : ViewModel() {
         }
     }
 
-    // Salvamento ultra completo enviado diretamente para a nuvem do Firestore
     fun adicionarNovaSerie(peso: String, reps: String, exercicio: Exercicio, nomeTreino: String) {
         if (peso.isNotBlank() && reps.isNotBlank()) {
             val novoItem = HistoricoCarga("Hoje", "$peso kg", reps, exercicio.nome, exercicio.musculo, nomeTreino)
@@ -142,7 +166,7 @@ class FitViewModel : ViewModel() {
         val dadosTreino = hashMapOf(
             "data" to item.data,
             "peso" to item.peso,
-            "reps" to item.reps, // Repetições corrigidas e forçadas aqui!
+            "reps" to item.reps,
             "exercicio" to item.exercicio,
             "musculo" to item.musculo,
             "treino" to item.treino,
@@ -151,12 +175,11 @@ class FitViewModel : ViewModel() {
 
         db.collection("historico_treinos")
             .add(dadosTreino)
-            .addOnSuccessListener { /* Sincronizado com Sucesso */ }
-            .addOnFailureListener { /* Fallback Offline */ }
+            .addOnSuccessListener { }
+            .addOnFailureListener { }
     }
 }
 
-// --- MAIN ACTIVITY ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -342,7 +365,6 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
     var serieAtual by remember { mutableIntStateOf(1) }
     val totalSeries = 4
 
-    // Pega os exercícios específicos deste treino
     val listaExercicios = remember { viewModel.obterExerciciosDoTreino(nomeTreino) }
     var indiceExercicioAtual by remember { mutableIntStateOf(0) }
     val exercicioAtual = listaExercicios[indiceExercicioAtual]
@@ -472,18 +494,15 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
 
             Button(
                 onClick = {
-                    // Adiciona a série atual ao banco com TODOS os dados solicitados
                     viewModel.adicionarNovaSerie(pesoInput, repsInput, exercicioAtual, nomeTreino)
                     
                     if (serieAtual < totalSeries) {
                         serieAtual++
                     } else {
-                        // Se terminou as séries do exercício atual, verifica se há outro no treino
                         if (indiceExercicioAtual < listaExercicios.lastIndex) {
                             indiceExercicioAtual++
-                            serieAtual = 1 // Reinicia as séries para o próximo exercício
+                            serieAtual = 1
                         } else {
-                            // Se era o último exercício, vai para a tela de evolução dele
                             navController.navigate("evolucao/${exercicioAtual.nome}")
                         }
                     }
