@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -41,12 +42,14 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,15 +65,16 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import kotlinx.coroutines.launch
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.launch
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
 
 // --- CLASSES DE DADOS E RETROFIT ---
 data class Treino(val id: String, val nome: String, val subttitulo: String)
-data class HistoricoCarga(val data: String, val peso: String)
+// ATUALIZADO: Adicionado repetições e o nome do exercício no histórico
+data class HistoricoCarga(val data: String, val peso: String, val reps: String, val exercicio: String)
 data class ExercicioDTO(val name: String, val target: String)
 
 interface ApiService {
@@ -92,7 +96,8 @@ object RetrofitClient {
 class FitViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
 
-    val treinos = listOf(
+    // ATUALIZADO: Agora é uma lista mutável para podermos adicionar treinos nela
+    val treinos = mutableStateListOf(
         Treino("1", "Treino A", "Superior - Peito e Costas"),
         Treino("2", "Treino B", "Inferior - Pernas e Glúteos"),
         Treino("3", "Treino C", "Cardio e Abdominais")
@@ -101,10 +106,11 @@ class FitViewModel : ViewModel() {
     var exerciciosDaApi = mutableStateOf<List<ExercicioDTO>>(emptyList())
     var carregandoApi = mutableStateOf(false)
 
+    // ATUALIZADO: Inserindo dados falsos mais completos
     val listaHistorico = mutableStateListOf(
-        HistoricoCarga("25/04/2026", "55 kg"),
-        HistoricoCarga("22/04/2026", "52.5 kg"),
-        HistoricoCarga("18/04/2026", "50 kg")
+        HistoricoCarga("25/04/2026", "55 kg", "8", "Supino Reto"),
+        HistoricoCarga("22/04/2026", "52.5 kg", "10", "Supino Reto"),
+        HistoricoCarga("18/04/2026", "50 kg", "12", "Supino Reto")
     )
 
     init {
@@ -129,9 +135,18 @@ class FitViewModel : ViewModel() {
         }
     }
 
-    fun adicionarNovaSerie(peso: String) {
-        if (peso.isNotBlank()) {
-            val novoItem = HistoricoCarga("Hoje", "$peso kg")
+    // NOVO: Função para criar um treino do zero
+    fun adicionarTreino(nome: String, subtitulo: String) {
+        if (nome.isNotBlank()) {
+            val novoId = System.currentTimeMillis().toString()
+            treinos.add(Treino(novoId, nome, subtitulo))
+        }
+    }
+
+    // ATUALIZADO: Agora recebe as repetições e o nome do exercício
+    fun adicionarNovaSerie(peso: String, reps: String, exercicioNome: String) {
+        if (peso.isNotBlank() && reps.isNotBlank()) {
+            val novoItem = HistoricoCarga("Hoje", "$peso kg", reps, exercicioNome)
             listaHistorico.add(0, novoItem)
             salvarNoFirestoreNuvem(novoItem)
         }
@@ -141,6 +156,8 @@ class FitViewModel : ViewModel() {
         val dadosTreino = hashMapOf(
             "data" to item.data,
             "peso" to item.peso,
+            "reps" to item.reps,
+            "exercicio" to item.exercicio,
             "timestamp" to System.currentTimeMillis()
         )
 
@@ -176,7 +193,11 @@ class MainActivity : ComponentActivity() {
                             val nome = backStackEntry.arguments?.getString("nomeTreino") ?: "Treino"
                             TelaExecucao(navController, viewModel, nome)
                         }
-                        composable("evolucao") { TelaEvolucao(navController, viewModel) }
+                        // ATUALIZADO: Rota de evolução agora exige saber QUAL exercício está evoluindo
+                        composable("evolucao/{nomeExercicio}") { backStackEntry ->
+                            val exercicio = backStackEntry.arguments?.getString("nomeExercicio") ?: "Exercício"
+                            TelaEvolucao(navController, viewModel, exercicio)
+                        }
                     }
                 }
             }
@@ -188,11 +209,68 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
     var textoBusca by remember { mutableStateOf("") }
+    
+    // NOVO: Controladores do pop-up de novo treino
+    var mostrarDialog by remember { mutableStateOf(false) }
+    var inputNovoTreino by remember { mutableStateOf("") }
+    var inputNovoSubtitulo by remember { mutableStateOf("") }
+
+    if (mostrarDialog) {
+        AlertDialog(
+            onDismissRequest = { mostrarDialog = false },
+            containerColor = Color(0xFF1E1E1E),
+            title = { Text("Novo Treino", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = inputNovoTreino,
+                        onValueChange = { inputNovoTreino = it },
+                        label = { Text("Nome do Treino (ex: Treino D)", color = Color.Gray) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00E5FF),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = inputNovoSubtitulo,
+                        onValueChange = { inputNovoSubtitulo = it },
+                        label = { Text("Foco (ex: Bíceps e Tríceps)", color = Color.Gray) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00E5FF),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.adicionarTreino(inputNovoTreino, inputNovoSubtitulo)
+                        mostrarDialog = false
+                        inputNovoTreino = ""
+                        inputNovoSubtitulo = ""
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                ) {
+                    Text("Salvar", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { mostrarDialog = false }) {
+                    Text("Cancelar", color = Color.Gray)
+                }
+            }
+        )
+    }
 
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { },
+                // ATUALIZADO: Ao clicar, abre o pop-up
+                onClick = { mostrarDialog = true },
                 containerColor = Color(0xFF00E5FF),
                 contentColor = Color.Black,
                 shape = RoundedCornerShape(16.dp)
@@ -239,7 +317,9 @@ fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
                     focusedBorderColor = Color(0xFF00E5FF),
                     unfocusedBorderColor = Color(0xFF333333),
                     focusedContainerColor = Color(0xFF1E1E1E),
-                    unfocusedContainerColor = Color(0xFF1E1E1E)
+                    unfocusedContainerColor = Color(0xFF1E1E1E),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White
                 ),
                 shape = RoundedCornerShape(14.dp)
             )
@@ -274,6 +354,16 @@ fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
 fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTreino: String) {
     var pesoInput by remember { mutableStateOf("50") }
     var repsInput by remember { mutableStateOf("12") }
+    
+    // NOVO: Controlador de Séries
+    var serieAtual by remember { mutableIntStateOf(1) }
+    val totalSeries = 4
+
+    val exercicioNome = if (viewModel.exerciciosDaApi.value.isNotEmpty()) {
+        viewModel.exerciciosDaApi.value.first().name
+    } else {
+        "Supino Reto"
+    }
 
     Scaffold { paddingValues ->
         Column(
@@ -325,12 +415,6 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
                     }
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    val exercicioNome = if (viewModel.exerciciosDaApi.value.isNotEmpty()) {
-                        viewModel.exerciciosDaApi.value.first().name
-                    } else {
-                        "Supino Reto"
-                    }
-
                     Text(exercicioNome, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     Text("Barra com anilhas", color = Color.Gray, fontSize = 14.sp)
                 }
@@ -338,24 +422,25 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // ATUALIZADO: Barrinha dinâmica de acordo com a série atual
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    repeat(4) { index ->
+                    repeat(totalSeries) { index ->
                         Box(
                             modifier = Modifier
                                 .size(width = 40.dp, height = 6.dp)
                                 .background(
-                                    color = if (index < 1) Color(0xFF00E5FF) else Color(0xFF333333),
+                                    color = if (index < serieAtual) Color(0xFF00E5FF) else Color(0xFF333333),
                                     shape = RoundedCornerShape(3.dp)
                                 )
                         )
                     }
                 }
-                Text("Série 1 de 4", color = Color.White, fontSize = 14.sp)
+                Text("Série $serieAtual de $totalSeries", color = Color.White, fontSize = 14.sp)
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -400,43 +485,34 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
 
             Spacer(modifier = Modifier.weight(1f))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = {}) { Icon(Icons.Default.Refresh, null, tint = Color.Gray) }
-                Spacer(modifier = Modifier.width(16.dp))
-                IconButton(
-                    onClick = {},
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color(0xFF1E1E1E), RoundedCornerShape(24.dp))
-                        .border(1.dp, Color(0xFF333333), RoundedCornerShape(24.dp))
-                ) { Icon(Icons.Default.PlayArrow, null, tint = Color.White) }
-                Spacer(modifier = Modifier.width(16.dp))
-                IconButton(onClick = {}) { Icon(Icons.Default.Menu, null, tint = Color.Gray) }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
             Button(
+                // ATUALIZADO: Lógica de avançar série e só navegar no final
                 onClick = {
-                    viewModel.adicionarNovaSerie(pesoInput)
-                    navController.navigate("evolucao")
+                    viewModel.adicionarNovaSerie(pesoInput, repsInput, exercicioNome)
+                    if (serieAtual < totalSeries) {
+                        serieAtual++
+                        // pesoInput = "" // Se quiser limpar o campo ao avançar a série, descomente aqui
+                    } else {
+                        navController.navigate("evolucao/$exercicioNome")
+                    }
                 },
                 modifier = Modifier.fillMaxWidth().height(50.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
                 shape = RoundedCornerShape(25.dp)
             ) {
-                Text("Confirmar Série", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(
+                    text = if (serieAtual < totalSeries) "Confirmar Série $serieAtual" else "Finalizar Exercício", 
+                    color = Color.Black, 
+                    fontWeight = FontWeight.Bold, 
+                    fontSize = 16.sp
+                )
             }
         }
     }
 }
 
 @Composable
-fun TelaEvolucao(navController: NavController, viewModel: FitViewModel) {
+fun TelaEvolucao(navController: NavController, viewModel: FitViewModel, nomeExercicio: String) {
     Scaffold { paddingValues ->
         Column(
             modifier = Modifier
@@ -452,13 +528,14 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Voltar",
-                    modifier = Modifier.clickable { navController.navigate("meus_treinos") },
+                    modifier = Modifier.clickable { navController.navigate("meus_treinos") { popUpTo(0) } },
                     tint = Color.White
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text("Evolução", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
             }
-            Text("Supino Reto - Histórico de cargas", color = Color.Gray, fontSize = 14.sp)
+            // ATUALIZADO: Mostra o nome real do exercício passado pela navegação
+            Text("$nomeExercicio - Histórico de cargas", color = Color.Gray, fontSize = 14.sp)
             Spacer(modifier = Modifier.height(24.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -489,11 +566,14 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel) {
             }
 
             Spacer(modifier = Modifier.height(28.dp))
-            Text("Histórico de Treinos", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+            Text("Histórico do Exercício", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
             Spacer(modifier = Modifier.height(12.dp))
 
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                items(viewModel.listaHistorico) { item ->
+                // ATUALIZADO: Filtra o histórico para mostrar só o do exercício atual
+                val historicoDesteExercicio = viewModel.listaHistorico.filter { it.exercicio == nomeExercicio }
+                
+                items(historicoDesteExercicio) { item ->
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -509,7 +589,8 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel) {
                         ) {
                             Column {
                                 Text(item.data, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                Text("Carga máxima", color = Color.Gray, fontSize = 12.sp)
+                                // ATUALIZADO: Mostra as repetições
+                                Text("${item.reps} repetições", color = Color.Gray, fontSize = 12.sp)
                             }
                             Text(item.peso, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E5FF))
                         }
