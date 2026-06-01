@@ -60,82 +60,68 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.firestore.FirebaseFirestore
-import kotlinx.coroutines.launch
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.GET
 
-// --- CLASSES DE DADOS E RETROFIT ---
+// --- MODELOS DE DADOS ATUALIZADOS ---
 data class Treino(val id: String, val nome: String, val subttitulo: String)
-// ATUALIZADO: Adicionado repetições e o nome do exercício no histórico
-data class HistoricoCarga(val data: String, val peso: String, val reps: String, val exercicio: String)
-data class ExercicioDTO(val name: String, val target: String)
+data class Exercicio(val nome: String, val musculo: String)
 
-interface ApiService {
-    @GET("exercicios")
-    suspend fun getExercicios(): List<ExercicioDTO>
-}
-
-object RetrofitClient {
-    val instance: ApiService by lazy {
-        Retrofit.Builder()
-            .baseUrl("https://exemplo.com/")
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(ApiService::class.java)
-    }
-}
+// Firebase agora armazena o mapeamento completo pedido!
+data class HistoricoCarga(
+    val data: String, 
+    val peso: String, 
+    val reps: String, 
+    val exercicio: String, 
+    val musculo: String, 
+    val treino: String
+)
 
 // --- VIEWMODEL ---
 class FitViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
 
-    // ATUALIZADO: Agora é uma lista mutável para podermos adicionar treinos nela
     val treinos = mutableStateListOf(
         Treino("1", "Treino A", "Superior - Peito e Costas"),
         Treino("2", "Treino B", "Inferior - Pernas e Glúteos"),
         Treino("3", "Treino C", "Cardio e Abdominais")
     )
 
-    var exerciciosDaApi = mutableStateOf<List<ExercicioDTO>>(emptyList())
-    var carregandoApi = mutableStateOf(false)
-
-    // ATUALIZADO: Inserindo dados falsos mais completos
-    val listaHistorico = mutableStateListOf(
-        HistoricoCarga("25/04/2026", "55 kg", "8", "Supino Reto"),
-        HistoricoCarga("22/04/2026", "52.5 kg", "10", "Supino Reto"),
-        HistoricoCarga("18/04/2026", "50 kg", "12", "Supino Reto")
+    // Banco de dados estático de exercícios vinculados por treino
+    private val mapaExercicios = mapOf(
+        "Treino A" to listOf(
+            Exercicio("Supino Reto", "Peito"),
+            Exercicio("Supino Inclinado", "Peito"),
+            Exercicio("Remada Curvada", "Costas"),
+            Exercicio("Puxada Alta", "Costas")
+        ),
+        "Treino B" to listOf(
+            Exercicio("Agachamento Livre", "Pernas"),
+            Exercicio("Leg Press 45°", "Pernas"),
+            Exercicio("Cadeira Extensora", "Pernas"),
+            Exercicio("Elevação Pélvica", "Glúteos")
+        ),
+        "Treino C" to listOf(
+            Exercicio("Abdominal Supra", "Abdominais"),
+            Exercicio("Prancha Isométrica", "Abdominais"),
+            Exercicio("Corrida na Esteira", "Cardio")
+        )
     )
 
-    init {
-        buscarExerciciosDaAPI()
+    val listaHistorico = mutableStateListOf(
+        HistoricoCarga("25/04/2026", "55 kg", "8", "Supino Reto", "Peito", "Treino A"),
+        HistoricoCarga("22/04/2026", "52.5 kg", "10", "Supino Reto", "Peito", "Treino A"),
+        HistoricoCarga("18/04/2026", "50 kg", "12", "Supino Reto", "Peito", "Treino A")
+    )
+
+    // Pega a lista correta baseado no nome do treino selecionado
+    fun obterExerciciosDoTreino(nomeTreino: String): List<Exercicio> {
+        return mapaExercicios[nomeTreino] ?: listOf(Exercicio("Exercício Livre", "Geral"))
     }
 
-    private fun buscarExerciciosDaAPI() {
-        viewModelScope.launch {
-            carregandoApi.value = true
-            try {
-                val resultado = RetrofitClient.instance.getExercicios()
-                exerciciosDaApi.value = resultado
-            } catch (e: Exception) {
-                exerciciosDaApi.value = listOf(
-                    ExercicioDTO("Supino Reto", "Peito"),
-                    ExercicioDTO("Agachamento Livre", "Pernas"),
-                    ExercicioDTO("Desenvolvimento", "Ombros")
-                )
-            } finally {
-                carregandoApi.value = false
-            }
-        }
-    }
-
-    // NOVO: Função para criar um treino do zero
     fun adicionarTreino(nome: String, subtitulo: String) {
         if (nome.isNotBlank()) {
             val novoId = System.currentTimeMillis().toString()
@@ -143,10 +129,10 @@ class FitViewModel : ViewModel() {
         }
     }
 
-    // ATUALIZADO: Agora recebe as repetições e o nome do exercício
-    fun adicionarNovaSerie(peso: String, reps: String, exercicioNome: String) {
+    // Salvamento ultra completo enviado diretamente para a nuvem do Firestore
+    fun adicionarNovaSerie(peso: String, reps: String, exercicio: Exercicio, nomeTreino: String) {
         if (peso.isNotBlank() && reps.isNotBlank()) {
-            val novoItem = HistoricoCarga("Hoje", "$peso kg", reps, exercicioNome)
+            val novoItem = HistoricoCarga("Hoje", "$peso kg", reps, exercicio.nome, exercicio.musculo, nomeTreino)
             listaHistorico.add(0, novoItem)
             salvarNoFirestoreNuvem(novoItem)
         }
@@ -156,19 +142,21 @@ class FitViewModel : ViewModel() {
         val dadosTreino = hashMapOf(
             "data" to item.data,
             "peso" to item.peso,
-            "reps" to item.reps,
+            "reps" to item.reps, // Repetições corrigidas e forçadas aqui!
             "exercicio" to item.exercicio,
+            "musculo" to item.musculo,
+            "treino" to item.treino,
             "timestamp" to System.currentTimeMillis()
         )
 
         db.collection("historico_treinos")
             .add(dadosTreino)
-            .addOnSuccessListener { /* Sincronizado nas nuvens */ }
-            .addOnFailureListener { /* Fallback */ }
+            .addOnSuccessListener { /* Sincronizado com Sucesso */ }
+            .addOnFailureListener { /* Fallback Offline */ }
     }
 }
 
-// --- MAIN ACTIVITY E TELAS ---
+// --- MAIN ACTIVITY ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -190,10 +178,9 @@ class MainActivity : ComponentActivity() {
                     NavHost(navController = navController, startDestination = "meus_treinos") {
                         composable("meus_treinos") { TelaMeusTreinos(navController, viewModel) }
                         composable("execucao/{nomeTreino}") { backStackEntry ->
-                            val nome = backStackEntry.arguments?.getString("nomeTreino") ?: "Treino"
+                            val nome = backStackEntry.arguments?.getString("nomeTreino") ?: "Treino A"
                             TelaExecucao(navController, viewModel, nome)
                         }
-                        // ATUALIZADO: Rota de evolução agora exige saber QUAL exercício está evoluindo
                         composable("evolucao/{nomeExercicio}") { backStackEntry ->
                             val exercicio = backStackEntry.arguments?.getString("nomeExercicio") ?: "Exercício"
                             TelaEvolucao(navController, viewModel, exercicio)
@@ -209,8 +196,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
     var textoBusca by remember { mutableStateOf("") }
-    
-    // NOVO: Controladores do pop-up de novo treino
     var mostrarDialog by remember { mutableStateOf(false) }
     var inputNovoTreino by remember { mutableStateOf("") }
     var inputNovoSubtitulo by remember { mutableStateOf("") }
@@ -236,7 +221,7 @@ fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
                     OutlinedTextField(
                         value = inputNovoSubtitulo,
                         onValueChange = { inputNovoSubtitulo = it },
-                        label = { Text("Foco (ex: Bíceps e Tríceps)", color = Color.Gray) },
+                        label = { Text("Foco (ex: Braços Completo)", color = Color.Gray) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color(0xFF00E5FF),
                             focusedTextColor = Color.White,
@@ -269,7 +254,6 @@ fun TelaMeusTreinos(navController: NavController, viewModel: FitViewModel) {
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
-                // ATUALIZADO: Ao clicar, abre o pop-up
                 onClick = { mostrarDialog = true },
                 containerColor = Color(0xFF00E5FF),
                 contentColor = Color.Black,
@@ -355,15 +339,13 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
     var pesoInput by remember { mutableStateOf("50") }
     var repsInput by remember { mutableStateOf("12") }
     
-    // NOVO: Controlador de Séries
     var serieAtual by remember { mutableIntStateOf(1) }
     val totalSeries = 4
 
-    val exercicioNome = if (viewModel.exerciciosDaApi.value.isNotEmpty()) {
-        viewModel.exerciciosDaApi.value.first().name
-    } else {
-        "Supino Reto"
-    }
+    // Pega os exercícios específicos deste treino
+    val listaExercicios = remember { viewModel.obterExerciciosDoTreino(nomeTreino) }
+    var indiceExercicioAtual by remember { mutableIntStateOf(0) }
+    val exercicioAtual = listaExercicios[indiceExercicioAtual]
 
     Scaffold { paddingValues ->
         Column(
@@ -410,19 +392,18 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
                                 .background(Color(0xFF00E5FF).copy(alpha = 0.1f), RoundedCornerShape(12.dp))
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
-                            Text("3 de 8", color = Color(0xFF00E5FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("${indiceExercicioAtual + 1} de ${listaExercicios.size}", color = Color(0xFF00E5FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text(exercicioNome, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("Barra com anilhas", color = Color.Gray, fontSize = 14.sp)
+                    Text(exercicioAtual.nome, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("Grupo Muscular: ${exercicioAtual.musculo}", color = Color.Gray, fontSize = 14.sp)
                 }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // ATUALIZADO: Barrinha dinâmica de acordo com a série atual
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -457,7 +438,9 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
                         focusedBorderColor = Color(0xFF00E5FF),
                         unfocusedBorderColor = Color(0xFF333333),
                         focusedContainerColor = Color(0xFF1E1E1E),
-                        unfocusedContainerColor = Color(0xFF1E1E1E)
+                        unfocusedContainerColor = Color(0xFF1E1E1E),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
                     ),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -477,7 +460,9 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
                         focusedBorderColor = Color(0xFF00E5FF),
                         unfocusedBorderColor = Color(0xFF333333),
                         focusedContainerColor = Color(0xFF1E1E1E),
-                        unfocusedContainerColor = Color(0xFF1E1E1E)
+                        unfocusedContainerColor = Color(0xFF1E1E1E),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
                     ),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -486,14 +471,21 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
             Spacer(modifier = Modifier.weight(1f))
 
             Button(
-                // ATUALIZADO: Lógica de avançar série e só navegar no final
                 onClick = {
-                    viewModel.adicionarNovaSerie(pesoInput, repsInput, exercicioNome)
+                    // Adiciona a série atual ao banco com TODOS os dados solicitados
+                    viewModel.adicionarNovaSerie(pesoInput, repsInput, exercicioAtual, nomeTreino)
+                    
                     if (serieAtual < totalSeries) {
                         serieAtual++
-                        // pesoInput = "" // Se quiser limpar o campo ao avançar a série, descomente aqui
                     } else {
-                        navController.navigate("evolucao/$exercicioNome")
+                        // Se terminou as séries do exercício atual, verifica se há outro no treino
+                        if (indiceExercicioAtual < listaExercicios.lastIndex) {
+                            indiceExercicioAtual++
+                            serieAtual = 1 // Reinicia as séries para o próximo exercício
+                        } else {
+                            // Se era o último exercício, vai para a tela de evolução dele
+                            navController.navigate("evolucao/${exercicioAtual.nome}")
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(50.dp),
@@ -501,7 +493,9 @@ fun TelaExecucao(navController: NavController, viewModel: FitViewModel, nomeTrei
                 shape = RoundedCornerShape(25.dp)
             ) {
                 Text(
-                    text = if (serieAtual < totalSeries) "Confirmar Série $serieAtual" else "Finalizar Exercício", 
+                    text = if (serieAtual < totalSeries) "Confirmar Série $serieAtual" 
+                           else if (indiceExercicioAtual < listaExercicios.lastIndex) "Próximo Exercício" 
+                           else "Finalizar Treino", 
                     color = Color.Black, 
                     fontWeight = FontWeight.Bold, 
                     fontSize = 16.sp
@@ -534,7 +528,6 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel, nomeExer
                 Spacer(modifier = Modifier.width(12.dp))
                 Text("Evolução", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
             }
-            // ATUALIZADO: Mostra o nome real do exercício passado pela navegação
             Text("$nomeExercicio - Histórico de cargas", color = Color.Gray, fontSize = 14.sp)
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -570,7 +563,6 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel, nomeExer
             Spacer(modifier = Modifier.height(12.dp))
 
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                // ATUALIZADO: Filtra o histórico para mostrar só o do exercício atual
                 val historicoDesteExercicio = viewModel.listaHistorico.filter { it.exercicio == nomeExercicio }
                 
                 items(historicoDesteExercicio) { item ->
@@ -589,8 +581,8 @@ fun TelaEvolucao(navController: NavController, viewModel: FitViewModel, nomeExer
                         ) {
                             Column {
                                 Text(item.data, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                // ATUALIZADO: Mostra as repetições
-                                Text("${item.reps} repetições", color = Color.Gray, fontSize = 12.sp)
+                                Text("${item.reps} repetições | Músculo: ${item.musculo}", color = Color.Gray, fontSize = 12.sp)
+                                Text("Origem: ${item.treino}", color = Color(0xFF00E5FF).copy(alpha = 0.6f), fontSize = 11.sp)
                             }
                             Text(item.peso, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E5FF))
                         }
